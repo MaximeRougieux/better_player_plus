@@ -198,13 +198,24 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
         }
         timeObserverIdDict.removeAll()
     }
+
+    private func disposeAllPlayers() {
+        for (_, player) in players {
+            player.dispose()
+            disposeNotificationData(player)
+        }
+        players.removeAll()
+        dataSourceDict.removeAll()
+        timeObserverIdDict.removeAll()
+        artworkImageDict.removeAll()
+        setRemoteCommandsNotificationNotActive()
+    }
 }
 
 extension BetterPlayerPlugin {
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         if call.method == "init" {
-            for (_, player) in players { player.dispose() }
-            players.removeAll()
+            disposeAllPlayers()
             result(nil)
             return
         }
@@ -254,10 +265,14 @@ extension BetterPlayerPlugin {
             }
             result(nil)
         case "dispose":
-            player.clear()
+            // `dispose()`, not `clear()`: `clear()` leaves the
+            // AVPictureInPictureController and its layer alive, so disposing a player
+            // while PiP was open left the window floating and playing forever.
+            player.dispose()
             disposeNotificationData(player)
             setRemoteCommandsNotificationNotActive()
             players.removeValue(forKey: textureId)
+            dataSourceDict.removeValue(forKey: textureId)
             if players.isEmpty { try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation]) }
             result(nil)
         case "setLooping":
@@ -362,7 +377,6 @@ extension BetterPlayerPlugin {
     }
 
     public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
-        for (_, player) in players { player.disposeSansEventChannel() }
-        players.removeAll()
+        disposeAllPlayers()
     }
 }

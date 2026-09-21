@@ -999,7 +999,6 @@ class BetterPlayerController {
       throw StateError('The data source has not been initialized');
     }
     return videoPlayerController!.setAspectRatio(aspectRatio.name);
-
   }
 
   ///Enable Picture in Picture (PiP) mode. [betterPlayerGlobalKey] is required
@@ -1234,7 +1233,7 @@ class BetterPlayerController {
 
       ///Delete files async
       for (final file in _tempFiles) {
-        file.delete();
+        file.delete().ignore();
       }
     }
   }

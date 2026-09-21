@@ -1,3 +1,29 @@
+## 1.4.1
+
+* Added support for Built-in Kotlin on Android (AGP 9.0+) while maintaining full backward compatibility with Flutter 3.41.0+ and AGP < 9 (#128)
+* Fixed iOS native player memory leak on dispose: unregister `dataSourceDict`, break FlutterEventChannel retain cycle, detach player layers, and clean up notification center (#129)
+* Fixed iOS latent KVO crash on deallocation: weakly track `observedItem` to safely unregister observers, and ensure observers are removed before `currentItem` checks in `clear()` (#129)
+* Preserved iOS background transition notification handler when playback ends or loops (#129)
+* Upgraded Android Media3 dependencies to 1.11.0
+
+## 1.4.0
+
+* Inlined and modernized `visibility_detector` to remove the unmaintained external dependency and prevent Flutter/Dart version conflicts
+* Fixed static analysis issue (`prefer_if_elements_to_conditional_expressions`) restoring full 160/160 pub points
+* Optimized Android native dependencies by removing unused `media3-datasource-cronet`, `media3-session`, and obsolete artifacts
+* Added Android R8 / Proguard consumer rules (`consumer-rules.pro`) for safe and effective release shrinking
+* Fixed Android Activity memory leak on detachment (`onDetachedFromActivity`)
+* Fixed potential event queue leak on player disposal in Android (`BetterPlayer.kt`)
+* Hardened `BetterPlayerListVideoPlayer` against race conditions during fast list scrolling/disposal
+* Optimized package archive size on pub.dev by excluding heavy example native runners and test media in `.pubignore`
+
+## 1.3.5
+
+* Fixed Android hardware decoder failure by adding software decoder fallback (thanks @ZhaosongRen)
+* Fixed Android play/pause notification state not syncing from native player changes (thanks @mmeshrif)
+* Fixed `NullPointerException` in `_BetterPlayerVideoFitWidgetState.dispose` and unassigned ClearKey `DrmSessionManager` on Android (thanks @vivek995378)
+* Fixed Simplified Chinese translations (thanks @zs)
+
 ## 1.3.4
 
 * Fixed iOS build error: duplicate `BetterPlayerPlugin` interface definition caused by CocoaPods exposing ObjC header alongside Swift-generated header; excluded `BetterPlayerPlugin.h/m` from podspec source files

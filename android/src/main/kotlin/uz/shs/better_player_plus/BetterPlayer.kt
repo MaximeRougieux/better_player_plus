@@ -49,6 +49,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -113,7 +114,10 @@ internal class BetterPlayer(
             this.customDefaultLoadControl.bufferForPlaybackAfterRebufferMs
         )
         loadControl = loadBuilder.build()
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
         exoPlayer = ExoPlayer.Builder(context)
+            .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .build()
@@ -171,7 +175,7 @@ internal class BetterPlayer(
                     .build(httpMediaDrmCallback)
             }
         } else if (!clearKey.isNullOrEmpty()) {
-            DefaultDrmSessionManager.Builder()
+            drmSessionManager = DefaultDrmSessionManager.Builder()
                 .setUuidAndExoMediaDrmProvider(
                     C.CLEARKEY_UUID,
                     FrameworkMediaDrm.DEFAULT_PROVIDER
@@ -498,6 +502,15 @@ internal class BetterPlayer(
             override fun onPlayerError(error: PlaybackException) {
                 eventSink.error("VideoError", "Video player had error $error", "")
             }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // Catches play/pause state changes triggered natively (e.g. the
+                // media notification's PlayerNotificationManager controls the
+                // ExoPlayer instance directly), which otherwise never reach Dart.
+                val event: MutableMap<String, Any> = HashMap()
+                event["event"] = if (isPlaying) "play" else "pause"
+                eventSink.success(event)
+            }
         })
         val reply: MutableMap<String, Any> = HashMap()
         reply["textureId"] = textureEntry.id()
@@ -758,6 +771,7 @@ internal class BetterPlayer(
         }
         textureEntry.release()
         eventChannel.setStreamHandler(null)
+        eventSink.setDelegate(null)
         surface?.release()
         exoPlayer?.release()
     }

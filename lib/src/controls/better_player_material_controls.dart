@@ -81,14 +81,18 @@ class _BetterPlayerMaterialControlsState extends BetterPlayerControlsState<Bette
       },
       child: AbsorbPointer(
         absorbing: controlsNotVisible,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (_wasLoading) Center(child: _buildLoadingWidget()) else _buildHitArea(),
-            Positioned(top: 0, left: 0, right: 0, child: _buildTopBar()),
-            Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
-            _buildNextVideoWidget(),
-          ],
+        // The bars are pinned to top: 0 / bottom: 0, so in fullscreen they land
+        // flush against the physical edges of the screen without this.
+        child: fullScreenSafeArea(
+          Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_wasLoading) Center(child: _buildLoadingWidget()) else _buildHitArea(),
+              Positioned(top: 0, left: 0, right: 0, child: _buildTopBar()),
+              Positioned(bottom: 0, left: 0, right: 0, child: _buildBottomBar()),
+              _buildNextVideoWidget(),
+            ],
+          ),
         ),
       ),
     );
@@ -239,8 +243,10 @@ class _BetterPlayerMaterialControlsState extends BetterPlayerControlsState<Bette
                   if (_controlsConfiguration.enablePlayPause) _buildPlayPause(_controller!) else const SizedBox(),
                   if (_betterPlayerController!.isLiveStream())
                     _buildLiveWidget()
+                  else if (_controlsConfiguration.enableProgressText)
+                    Expanded(child: _buildPosition())
                   else
-                    _controlsConfiguration.enableProgressText ? Expanded(child: _buildPosition()) : const SizedBox(),
+                    const SizedBox(),
                   const Spacer(),
                   if (_controlsConfiguration.enableMute) _buildMuteButton(_controller) else const SizedBox(),
                   if (_controlsConfiguration.enableFullscreen) _buildExpandButton() else const SizedBox(),
@@ -249,8 +255,10 @@ class _BetterPlayerMaterialControlsState extends BetterPlayerControlsState<Bette
             ),
             if (_betterPlayerController!.isLiveStream())
               const SizedBox()
+            else if (_controlsConfiguration.enableProgressBar)
+              _buildProgressBar()
             else
-              _controlsConfiguration.enableProgressBar ? _buildProgressBar() : const SizedBox(),
+              const SizedBox(),
           ],
         ),
       ),

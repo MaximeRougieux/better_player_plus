@@ -25,10 +25,18 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     public private(set) var failedCount: Int = 0
     private var videoGravity: AVLayerVideoGravity = .resizeAspect
     private weak var playerView: UIView?
+    /// The platform view created before [playerView].
+    ///
+    /// Entering fullscreen builds a *second* platform view for the same player
+    /// (`_fullScreenRoutePageBuilder` calls `_buildPlayer()` afresh) and popping the
+    /// route destroys it, while the inline view stays mounted behind the route.
+    /// Both refs are weak, so after that round trip `playerView` is nil and this
+    /// still points at the live inline view — which is what keeps PiP armed.
+    private weak var previousPlayerView: UIView?
 
-    public var playerLayerRef: AVPlayerLayer?
     public var pictureInPicture: Bool = false
     public var observersAdded: Bool = false
+    private weak var observedItem: AVPlayerItem?
     public var stalledCount: Int = 0
     public var isStalledCheckStarted: Bool = false
     public var playerRate: Float = 1.0
@@ -37,6 +45,8 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
 
     private var pipController: AVPictureInPictureController?
     private var restoreUIOnPipStop: ((Bool) -> Void)?
+    /// Invalidates a pending background-pause check when a newer one supersedes it.
+    private var backgroundPauseGeneration = 0
 
     public override init() {
         self.player = AVPlayer()
@@ -49,6 +59,12 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         self.isInitialized = false
         self.isPlaying = false
         self.disposed = false
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
     }
 
     public convenience init(frame: CGRect) {
@@ -62,7 +78,19 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
             playerLayer.videoGravity = self.videoGravity
         }
         
+        if self.playerView !== playerView {
+            self.previousPlayerView = self.playerView
+        }
         self.playerView = playerView
+        // Re-arm whenever this view enters or leaves a window, not just now. Exiting
+        // fullscreen destroys that route's platform view without calling view()
+        // again, so without this hook PiP would stay armed against a dead layer and
+        // backgrounding from there would produce a black or frozen PiP window.
+        playerView.onWindowChanged = { [weak self] in self?.armPictureInPicture() }
+        // Arm PiP up front rather than on the PiP button press: that is what lets
+        // iOS move playback into a PiP window when the app is backgrounded — see
+        // armPictureInPicture().
+        armPictureInPicture()
         return playerView
     }
     
@@ -72,10 +100,6 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         
         if let playerLayer = playerView?.layer as? AVPlayerLayer {
             playerLayer.videoGravity = gravity
-        }
-        
-        if let pipLayer = playerLayerRef {
-            pipLayer.videoGravity = gravity
         }
     }
 
@@ -90,6 +114,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
             item.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [], context: &playbackBufferEmptyContext)
             item.addObserver(self, forKeyPath: "playbackBufferFull", options: [], context: &playbackBufferFullContext)
             NotificationCenter.default.addObserver(self, selector: #selector(itemDidPlayToEndTime(_:)), name: .AVPlayerItemDidPlayToEndTime, object: item)
+            observedItem = item
             observersAdded = true
         }
     }
@@ -97,13 +122,15 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     private func removeObservers() {
         if observersAdded {
             player.removeObserver(self, forKeyPath: "rate", context: nil)
-            player.currentItem?.removeObserver(self, forKeyPath: "status", context: &statusContext)
-            player.currentItem?.removeObserver(self, forKeyPath: "presentationSize", context: &presentationSizeContext)
-            player.currentItem?.removeObserver(self, forKeyPath: "loadedTimeRanges", context: &timeRangeContext)
-            player.currentItem?.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp", context: &playbackLikelyToKeepUpContext)
-            player.currentItem?.removeObserver(self, forKeyPath: "playbackBufferEmpty", context: &playbackBufferEmptyContext)
-            player.currentItem?.removeObserver(self, forKeyPath: "playbackBufferFull", context: &playbackBufferFullContext)
-            NotificationCenter.default.removeObserver(self)
+            let item = observedItem ?? player.currentItem
+            item?.removeObserver(self, forKeyPath: "status", context: &statusContext)
+            item?.removeObserver(self, forKeyPath: "presentationSize", context: &presentationSizeContext)
+            item?.removeObserver(self, forKeyPath: "loadedTimeRanges", context: &timeRangeContext)
+            item?.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp", context: &playbackLikelyToKeepUpContext)
+            item?.removeObserver(self, forKeyPath: "playbackBufferEmpty", context: &playbackBufferEmptyContext)
+            item?.removeObserver(self, forKeyPath: "playbackBufferFull", context: &playbackBufferFullContext)
+            NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: item)
+            observedItem = nil
             observersAdded = false
         }
     }
@@ -223,8 +250,16 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
                         guard let self = self, !self.disposed else { return }
                         if videoTrack.statusOfValue(forKey: "preferredTransform", error: nil) == .loaded {
                             self.preferredTransform = self.fixTransform(videoTrack)
+                            // Skip the video composition in the Simulator: an AVPlayerItem
+                            // with a videoComposition renders black there (audio keeps
+                            // playing) — the compositing render path has no working
+                            // implementation in the Simulator. AVPlayerLayer applies
+                            // preferredTransform on its own, so rotated videos still
+                            // display correctly; devices keep the composition unchanged.
+                            #if !targetEnvironment(simulator)
                             let videoComposition = self.getVideoComposition(transform: self.preferredTransform, asset: asset, videoTrack: videoTrack)
                             item.videoComposition = videoComposition
+                            #endif
                         }
                     }
                 }
@@ -408,6 +443,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         stalledCount = 0
         isStalledCheckStarted = false
         isPlaying = true
+        armPictureInPicture()
         updatePlayingState()
     }
 
@@ -478,12 +514,11 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
 
     public func setPictureInPicture(_ pictureInPicture: Bool) {
         self.pictureInPicture = pictureInPicture
-        if #available(iOS 9.0, *) {
-            if let pip = pipController, self.pictureInPicture && !pip.isPictureInPictureActive {
-                DispatchQueue.main.async { pip.startPictureInPicture() }
-            } else if let pip = pipController, !self.pictureInPicture && pip.isPictureInPictureActive {
-                DispatchQueue.main.async { pip.stopPictureInPicture() }
-            }
+        guard let pip = pipController else { return }
+        if pictureInPicture, !pip.isPictureInPictureActive {
+            DispatchQueue.main.async { pip.startPictureInPicture() }
+        } else if !pictureInPicture, pip.isPictureInPictureActive {
+            DispatchQueue.main.async { pip.stopPictureInPicture() }
         }
     }
 
@@ -492,72 +527,121 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         restoreUIOnPipStop = nil
     }
 
-    private func setupPipController() {
-        if #available(iOS 9.0, *) {
-            try? AVAudioSession.sharedInstance().setActive(true)
-            UIApplication.shared.beginReceivingRemoteControlEvents()
-            if pipController == nil, let layer = playerLayerRef, AVPictureInPictureController.isPictureInPictureSupported() {
-                pipController = AVPictureInPictureController(playerLayer: layer)
-                pipController?.delegate = self
-            }
+    /// The AVPlayerLayer that is actually on screen.
+    ///
+    /// The iOS side of this plugin is a platform view — `BetterPlayerView` has
+    /// `layerClass == AVPlayerLayer` — so the video is already a real player layer
+    /// inside the Flutter view hierarchy, laid out and positioned by Flutter.
+    private var displayLayer: AVPlayerLayer? {
+        // Prefer a view that is actually in a window. `didMoveToWindow` fires while
+        // the departing view is still weakly reachable, so picking `playerView`
+        // blindly would re-arm PiP onto the layer that is on its way out.
+        let candidates = [playerView, previousPlayerView].compactMap(\.self)
+        let onScreen = candidates.first { $0.window != nil }
+        return ((onScreen ?? candidates.first)?.layer) as? AVPlayerLayer
+    }
+
+    /// Points the PiP controller at the on-screen layer and arms automatic PiP.
+    ///
+    /// Idempotent and cheap, so it is called from both `view()` and `play()`.
+    ///
+    /// Two things here are load-bearing:
+    ///
+    /// * PiP is driven from `displayLayer`. The previous implementation grafted a
+    ///   *second* `AVPlayerLayer` onto the root view controller at the Flutter
+    ///   widget's frame, which rendered the video a second time over the Flutter
+    ///   UI at a position that never followed scrolling.
+    /// * `canStartPictureInPictureAutomaticallyFromInline` only works if the
+    ///   controller already exists and is attached to a visible, playing layer
+    ///   *before* the app resigns active. iOS refuses a programmatic
+    ///   `startPictureInPicture()` from `willResignActive`, so arming late — the
+    ///   old code built the controller 0.2s after the button press — can never
+    ///   produce background PiP.
+    private func armPictureInPicture() {
+        guard AVPictureInPictureController.isPictureInPictureSupported(), let layer = displayLayer else { return }
+        // Never swap the controller out from under a live PiP session — that would
+        // orphan the window the viewer is watching.
+        if pipController?.isPictureInPictureActive == true { return }
+        if pipController == nil || pipController?.playerLayer !== layer {
+            pipController = AVPictureInPictureController(playerLayer: layer)
+            pipController?.delegate = self
+        }
+        if #available(iOS 14.2, *) {
+            pipController?.canStartPictureInPictureAutomaticallyFromInline = true
         }
     }
 
     public func enablePictureInPicture(_ frame: CGRect) {
-        disablePictureInPicture()
-        usePlayerLayer(frame)
-    }
-
-    private func usePlayerLayer(_ frame: CGRect) {
-        let layer = AVPlayerLayer(player: player)
-        layer.videoGravity = self.videoGravity
-        if #available(iOS 13.0, *) {
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = windowScene.windows.first,
-               let rootVC = window.rootViewController {
-                layer.frame = frame
-                layer.needsDisplayOnBoundsChange = true
-                rootVC.view.layer.addSublayer(layer)
-                rootVC.view.layer.needsDisplayOnBoundsChange = true
-                playerLayerRef = layer
-                pipController = nil
-                setupPipController()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.setPictureInPicture(true)
-                }
-            }
-        } else {
-            if let window = UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first,
-               let rootVC = window.rootViewController {
-                layer.frame = frame
-                layer.needsDisplayOnBoundsChange = true
-                rootVC.view.layer.addSublayer(layer)
-                rootVC.view.layer.needsDisplayOnBoundsChange = true
-                playerLayerRef = layer
-                pipController = nil
-                setupPipController()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.setPictureInPicture(true)
-                }
-            }
-        }
+        // `frame` is ignored: the layer is the Flutter platform view, so Flutter
+        // already owns its geometry. The parameter stays for channel compatibility.
+        try? AVAudioSession.sharedInstance().setActive(true)
+        armPictureInPicture()
+        setPictureInPicture(true)
     }
 
     public func disablePictureInPicture() {
-        setPictureInPicture(true)
-        if let layer = playerLayerRef {
-            layer.removeFromSuperlayer()
-            playerLayerRef = nil
-            eventSink?(["event": "pipStop"])
+        setPictureInPicture(false)
+    }
+
+    /// Stops playback when the app is backgrounded *without* PiP taking over.
+    ///
+    /// Automatic PiP only starts when the viewer moves to another app — locking the
+    /// screen never starts a session. An app that declares the `audio` background
+    /// mode (which PiP requires) therefore keeps playing to a dark screen, with no
+    /// PiP window to justify it. Pause in exactly that case.
+    ///
+    /// The delay is the crux: `canStartPictureInPictureAutomaticallyFromInline`
+    /// sessions are started by the system around this notification, and the ordering
+    /// is not guaranteed, so `isPictureInPictureActive` has to be read a beat later
+    /// than `didEnterBackground`. `backgroundPauseGeneration` drops a stale check if
+    /// another background transition lands first.
+    @objc private func onDidEnterBackground() {
+        guard isPlaying, !disposed else { return }
+        backgroundPauseGeneration += 1
+        let generation = backgroundPauseGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, !self.disposed, generation == self.backgroundPauseGeneration else { return }
+            // Back in the foreground already, or PiP took over: nothing to do.
+            guard UIApplication.shared.applicationState == .background else { return }
+            guard self.pipController?.isPictureInPictureActive != true else { return }
+            self.pause()
+            self.eventSink?(["event": "pause"])
         }
+    }
+
+    /// Ends the PiP session now and makes sure the window actually closes.
+    ///
+    /// `stopPictureInPicture()` only *asks* AVKit to animate back into the source
+    /// layer. On the dispose path that layer is disappearing along with the screen,
+    /// so the request can simply be dropped — leaving the PiP window floating over
+    /// the app with the video still playing after the viewer navigated away.
+    /// Detaching the player from the layer is what genuinely closes the window.
+    private func tearDownPictureInPicture() {
+        guard let pip = pipController else { return }
+        pictureInPicture = false
+        pipController = nil
+        pip.delegate = nil
+        if #available(iOS 14.2, *) {
+            pip.canStartPictureInPictureAutomaticallyFromInline = false
+        }
+        if pip.isPictureInPictureActive {
+            pip.stopPictureInPicture()
+        }
+        pip.playerLayer.player = nil
     }
 
     // MARK: - AVPictureInPictureControllerDelegate
     public func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        disablePictureInPicture()
+        // Record the state and report it — nothing more. The old code called
+        // disablePictureInPicture() here, which (because that method used to
+        // *start* PiP) restarted the session while its layer was being torn down:
+        // the PiP window froze and returning to the app crashed.
+        pictureInPicture = false
+        eventSink?(["event": "pipStop"])
     }
 
     public func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        pictureInPicture = true
         eventSink?(["event": "pipStart"])
     }
 
@@ -605,8 +689,8 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         disposed = false
         failedCount = 0
         key = nil
-        guard player.currentItem != nil else { return }
         removeObservers()
+        guard player.currentItem != nil else { return }
         player.currentItem?.asset.cancelLoading()
     }
 
@@ -617,11 +701,28 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     }
 
     public func dispose() {
+        NotificationCenter.default.removeObserver(self)
+        backgroundPauseGeneration += 1
         pause()
+        tearDownPictureInPicture()
+        (playerView as? BetterPlayerView)?.player = nil
+        (previousPlayerView as? BetterPlayerView)?.player = nil
+        playerView = nil
+        previousPlayerView = nil
         disposeSansEventChannel()
         eventChannel?.setStreamHandler(nil)
-        disablePictureInPicture()
-        setPictureInPicture(false)
+        eventChannel = nil
+        eventSink = nil
+        loaderDelegate = nil
+        // Only after disposeSansEventChannel() -> clear() has pulled the KVO
+        // observers: clear() bails out early when there is no current item, so
+        // dropping the item first would leave them registered and crash on dealloc.
+        player.replaceCurrentItem(with: nil)
         disposed = true
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        removeObservers()
     }
 }
