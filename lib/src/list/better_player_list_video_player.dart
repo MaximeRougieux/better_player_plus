@@ -44,6 +44,7 @@ class _BetterPlayerListVideoPlayerState extends State<BetterPlayerListVideoPlaye
     with AutomaticKeepAliveClientMixin<BetterPlayerListVideoPlayer> {
   BetterPlayerController? _betterPlayerController;
   bool _isDisposing = false;
+  bool _isVisible = false;
 
   @override
   void initState() {
@@ -53,6 +54,7 @@ class _BetterPlayerListVideoPlayerState extends State<BetterPlayerListVideoPlaye
       betterPlayerDataSource: widget.dataSource,
       betterPlayerPlaylistConfiguration: const BetterPlayerPlaylistConfiguration(),
     );
+    _betterPlayerController!.addEventsListener(_onPlayerEvent);
 
     if (widget.betterPlayerListVideoPlayerController != null) {
       widget.betterPlayerListVideoPlayerController!.setBetterPlayerController(_betterPlayerController);
@@ -61,14 +63,25 @@ class _BetterPlayerListVideoPlayerState extends State<BetterPlayerListVideoPlaye
 
   @override
   void dispose() {
-    _isDisposing = true;
+    _betterPlayerController?.removeEventsListener(_onPlayerEvent);
     _betterPlayerController?.dispose();
+    _isDisposing = true;
     super.dispose();
+  }
+
+  void _onPlayerEvent(BetterPlayerEvent event) {
+    if (event.betterPlayerEventType == BetterPlayerEventType.initialized &&
+        _isVisible &&
+        widget.autoPlay &&
+        !_isDisposing) {
+      _betterPlayerController!.play();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    
     return AspectRatio(
       aspectRatio: _betterPlayerController!.getAspectRatio() ?? BetterPlayerUtils.calculateAspectRatio(context),
       child: BetterPlayer(key: Key('${_getUniqueKey()}_player'), controller: _betterPlayerController!),
@@ -79,9 +92,10 @@ class _BetterPlayerListVideoPlayerState extends State<BetterPlayerListVideoPlaye
     if (_isDisposing || _betterPlayerController == null) {
       return;
     }
+    _isVisible = visibleFraction >= widget.playFraction;
     final bool isPlaying = _betterPlayerController?.isPlaying() ?? false;
     final bool initialized = _betterPlayerController?.isVideoInitialized() ?? false;
-    if (visibleFraction >= widget.playFraction) {
+    if (_isVisible) {
       if (widget.autoPlay && initialized && !isPlaying && !_isDisposing) {
         await _betterPlayerController?.play();
       }
