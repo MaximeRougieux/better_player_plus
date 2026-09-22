@@ -41,6 +41,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     public var isStalledCheckStarted: Bool = false
     public var playerRate: Float = 1.0
     public var overriddenDuration: Int = 0
+    public var preferredForwardBufferDuration: TimeInterval = 0
     public var lastAvPlayerTimeControlStatus: AVPlayer.TimeControlStatus? = nil
 
     private var pipController: AVPictureInPictureController?
@@ -240,6 +241,9 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         self.stalledCount = 0
         self.isStalledCheckStarted = false
         self.playerRate = 1
+        if preferredForwardBufferDuration > 0 {
+            item.preferredForwardBufferDuration = preferredForwardBufferDuration
+        }
         player.replaceCurrentItem(with: item)
 
         let asset = item.asset
