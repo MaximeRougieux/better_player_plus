@@ -136,6 +136,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     }
 
     @objc private func itemDidPlayToEndTime(_ notification: Notification) {
+        guard isPlaying else { return }
         if isLooping {
             if let p = notification.object as? AVPlayerItem {
                 p.seek(to: .zero, completionHandler: nil)
@@ -275,6 +276,10 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     }
 
     private func startStalledCheck() {
+        guard isPlaying else {
+            isStalledCheckStarted = false
+            return
+        }
         if let currentItem = player.currentItem {
             if currentItem.isPlaybackLikelyToKeepUp || (availableDuration() - CMTimeGetSeconds(currentItem.currentTime())) > 10.0 {
                 play()
@@ -448,6 +453,9 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     }
 
     public func pause() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(startStalledCheckObjC), object: nil)
+        isStalledCheckStarted = false
+        stalledCount = 0
         isPlaying = false
         updatePlayingState()
     }
